@@ -1,0 +1,11 @@
+#!ipxe
+
+echo "DHCP"
+sleep 5
+ifconf net2
+ifclose net0
+ifclose net1
+
+echo "Chain to ${next-server}/grubx64.efi"
+sleep 5
+chain tftp://${next-server}/grubx64.efi || shell
