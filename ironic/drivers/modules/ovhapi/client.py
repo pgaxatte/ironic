@@ -1,116 +1,113 @@
-# Authors: Raphael Glon, Sylvain Burette @ OVH SA.
-
-import hashlib
-import json
-import re
-import requests
-import time
+# Copyright (c) 2020, OVH SAS.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from oslo_log import log
+import requests
 
 from ironic.conf import CONF
+from ironic.drivers.modules.ovhapi import ENDPOINTS
 from ironic.drivers.modules.ovhapi import ovh_base
-
-
-OBFUSCATE_REGEX = re.compile('X-Ovh-Application|password|Signature|X-Ovh-Consumer', flags=re.IGNORECASE)
 
 LOG = log.getLogger(__file__)
 
-#: Mapping between OVH API region names and corresponding endpoints
-ENDPOINTS = {
-    'ovh-eu': 'https://eu.api.ovh.com/1.0',
-    'ovh-us': 'https://api.us.ovhcloud.com/1.0',
-    'ovh-ca': 'https://ca.api.ovh.com/1.0',
-    'kimsufi-eu': 'https://eu.api.kimsufi.com/1.0',
-    'kimsufi-ca': 'https://ca.api.kimsufi.com/1.0',
-    'soyoustart-eu': 'https://eu.api.soyoustart.com/1.0',
-    'soyoustart-ca': 'https://ca.api.soyoustart.com/1.0',
-}
 
 class BaseClient(ovh_base.Api):
 
     def __init__(self):
-        # Try to use only one session
-        # This prevents from starting a new connection each time
-        # a call to get is made!
-        self.s = requests.Session()
-        debug = CONF.debug
-        if debug:
-            self.debug = 1
-        else:
-            self.debug = 0
+        super(BaseClient, self).__init__(
+            ENDPOINTS.get(CONF.ovhapi.endpoint),
+            CONF.ovhapi.application_key,
+            CONF.ovhapi.application_secret,
+            CONF.ovhapi.consumer_key,
+            CONF.debug
+        )
 
-        super(BaseClient, self).__init__(ENDPOINTS[CONF.ovhapi.endpoint], CONF.ovhapi.application_key,
-                                         CONF.ovhapi.application_secret, CONF.ovhapi.consumer_key)
+        self._check_ipxe_script_exists(CONF.ovhapi.poweroff_script)
+        self._check_ipxe_script_exists(CONF.ovhapi.boot_script)
 
-    # Super method + log in the middle
-    def raw_call(self, method, path, content=None):
+    def _check_ipxe_script_exists(self, script_name):
+        """Checks a certain ipxe script is present on the API.
+
+        :raises: requests.exceptions.HTTPError if the script is not found
         """
-        This is the main method of this wrapper. It will sign a given query and return its result.
-        Arguments:
-        - method: the HTTP method of the request (get/post/put/delete)
-        - path: the url you want to request
-        - content: the object you want to send in your request (will be automatically serialized to JSON)
-        """
-        target_url = self.base_url + path
-        now = str(int(time.time()) + self.time_delta())
-        body = ""
-        if content is not None:
-            body = json.dumps(content)
-        s1 = hashlib.sha1()
-        s1.update("+".join([self.application_secret, self.consumer_key, method.upper(), target_url, body, now]).encode('utf-8'))
-        sig = "$1$" + s1.hexdigest()
-        query_headers = {"X-Ovh-Application": self.application_key, "X-Ovh-Timestamp": now,
-                         "X-Ovh-Consumer": self.consumer_key, "X-Ovh-Signature": sig,
-                         "Content-type": "application/json"}
-        if self.consumer_key == "":
-            query_headers = {"X-Ovh-Application": self.application_key, "X-Ovh-Timestamp": now,
-                             "Content-type": "application/json"}
-
-        # Use the session init at startup
-        req = getattr(self.s, method.lower())
-
-        self.log_req(method.upper(), target_url, query_headers, body)
-
-        return req(target_url, stream=False, headers=query_headers, data=body)
-
-    def log_req(self, method, target_url, headers, data):
-        if not self.debug:
-            return
-
-        string_parts = [
-            "curl -g -i",
-            "-X '%s'" % method,
-            "'%s'" % target_url,
-        ]
-
-        for k, v in headers.iteritems():
-            if OBFUSCATE_REGEX.search(k):
-                v = 'OBFUSCATED'
-            header = "-H '%s: %s'" % (k, v)
-            string_parts.append(header)
-
-        LOG.debug("REQ: %s" % " ".join(string_parts))
-        if data:
-            LOG.debug("REQ BODY: %s\n" % data)
+        try:
+            result = self.get("/me/ipxeScript/{}".format(script_name))
+            result.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            LOG.error("Could not retrieve ipxe script named '{}': {}"
+                      .format(script_name, e))
+            raise e
 
     def list_servers(self):
-        return self.get('/dedicated/server')
+        """Gets the list of servers for this account.
 
-    def reboot_server(self, serverName):
-        return self.post('/dedicated/server/%s/reboot' % serverName)
+        :param server_name: the name of the server to reboot
+        """
+        return self.get("/dedicated/server")
 
-    def set_bootId(self, serverName, bootId):
-        return self.put("/dedicated/server/%s" % serverName, bootId = bootId)
+    def reboot_server(self, server_name):
+        """Reboots the server.
 
-    def get_task(self, serverName, taskId):
-        return self.get('/dedicated/server/%s/task/%s' % (serverName, taskId) )
+        :param server_name: the name of the server to reboot
+        """
+        return self.post("/dedicated/server/{}/reboot".format(server_name))
 
-    def post(self, path, **kwargs):
-        return super(BaseClient, self).post(path, content=kwargs)
+    def set_boot_script(self, server_name, script_name):
+        """Sets the server to point on the specified boot script
 
-    def put(self, path, **kwargs):
-        return super(BaseClient, self).put(path, content=kwargs)
+        :param server_name: the name of the server to configure
+        :param script_name: the name of the script to use on next boot
+        """
+        boot_id = self.get_ipxe_script_id(server_name, script_name)
+        return self.put("/dedicated/server/{}"
+                        .format(server_name), boot_id=boot_id)
 
-    def get(self, path, **kwargs):
-        return super(BaseClient, self).get(path, content=kwargs)
+    def get_task(self, server_name, task_id):
+        return self.get("/dedicated/server/{}/task/{}"
+                        .format(server_name, task_id))
+
+    def get_ipxe_script_id(self, server_name, script_name):
+        """Gets the ID of a ipxe script from its name for a given server.
+
+        :raises: requests.exceptions.HTTPError if the API return an error
+        :raises: Exception if not matching script is found
+        :returns: the ID of the script
+        """
+        try:
+            result = self.get("/dedicated/server/{}/boot".format(server_name))
+        except requests.exceptions.HTTPError as e:
+            LOG.error("Could not retrieve boot scripts for server '{}': {}"
+                      .format(server_name, e))
+            raise e
+
+        for boot_id in result:
+            try:
+                result = self.get("/dedicated/server/{}/boot/{}"
+                                  .format(server_name, boot_id))
+            except requests.exceptions.HTTPError as e:
+                LOG.warning("Could not get the description of bootId {} for "
+                            "server '{}'. Skipping. Exception: {}"
+                            .format(boot_id, server_name, e))
+                continue
+
+            # If this bootId corresponds to the script we are looking for,
+            # return it
+            if result.get("kernel", "") == script_name:
+                return boot_id
+
+        # TODO(pgaxatte): use a real custom exception
+        e = Exception("No script {} found for server {}"
+                      .format(script_name, server_name))
+        LOG.error("Could not retrieve the ID of the script: {}".format(e))
+        raise e

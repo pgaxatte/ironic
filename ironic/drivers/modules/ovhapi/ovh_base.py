@@ -1,142 +1,186 @@
-# Copyright (c) 2013, OVH SAS.
-# All rights reserved.
+# Copyright (c) 2020, OVH SAS.
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# * Redistributions of source code must retain the above copyright
-#  notice, this list of conditions and the following disclaimer.
-# * Redistributions in binary form must reproduce the above copyright
-#  notice, this list of conditions and the following disclaimer in the
-#  documentation and/or other materials provided with the distribution.
-# * Neither the name of OVH SAS nor the
-#  names of its contributors may be used to endorse or promote products
-#  derived from this software without specific prior written permission.
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
-# THIS SOFTWARE IS PROVIDED BY OVH SAS AND CONTRIBUTORS ``AS IS'' AND ANY
-# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL OVH SAS AND CONTRIBUTORS BE LIABLE FOR ANY
-# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""
-This module provides a simple python wrapper over the OVH REST API.
-It handles requesting credential, signing queries...
-"""
-
-import requests
 import hashlib
-import time
 import json
+import re
+import time
 
-OVH_API_EU = "https://api.ovh.com/1.0"          # Root URL of OVH european API
-OVH_API_CA = "https://ca.api.ovh.com/1.0"       # Root URL of OVH canadian API
-OVH_API_US = "https://api.ovh.us/1.0"           # Root URL of OVH us api
+from oslo_log import log
+import requests
+
+LOG = log.getLogger(__file__)
+# Regex to obfuscate log requests when debugging
+OBFUSCATE_REGEX = re.compile(
+    'X-Ovh-Application|password|Signature|X-Ovh-Consumer',
+    flags=re.IGNORECASE
+)
+
+# Mapping between OVH API region names and corresponding endpoints
+ENDPOINTS = {
+    'ovh-eu': 'https://eu.api.ovh.com/1.0',
+    'ovh-us': 'https://api.us.ovhcloud.com/1.0',
+    'ovh-ca': 'https://ca.api.ovh.com/1.0',
+    'kimsufi-eu': 'https://eu.api.kimsufi.com/1.0',
+    'kimsufi-ca': 'https://ca.api.kimsufi.com/1.0',
+    'soyoustart-eu': 'https://eu.api.soyoustart.com/1.0',
+    'soyoustart-ca': 'https://ca.api.soyoustart.com/1.0',
+}
 
 
 class Api(object):
-    """
-    Simple wrapper class for OVH REST API.
-    """
 
-    def __init__(self, root, application_key, application_secret, consumer_key=""):
+    def __init__(self, endpoint_url, application_key, application_secret,
+                 consumer_key="", debug=False):
+        """Initializes an OVH API client.
+
+        :param endpoint_url: the OVH endpoint you want to call
+        :param application_key: your application key given by OVH on
+            application registration
+        :param application_secret: your application secret given by OVH on
+            application registration
+        :param consumer_key: the consumer key you want to use, if any, given
+            after a credential request
+        :param debug: whether or not to log requests
         """
-        Construct a new wrapper instance.
-        Arguments:
-        - root: the ovh cluster you want to call (OvhApi.OVH_API_EU or OvhApi.OVH_API_CA)
-        - applicationKey: your application key given by OVH on application registration
-        - applicationSecret: your application secret given by OVH on application registration
-        - consumerKey: the consumer key you want to use, if any, given after a credential request
-        """
-        self.base_url = root
+        self.endpoint_url = endpoint_url
         self.application_key = application_key
         self.application_secret = application_secret
         self.consumer_key = consumer_key
+        self.debug = debug
+
+        self.session = requests.Session()
+
         self._time_delta = None
-        self._root = None
 
     def time_delta(self):
-        """
-        Get the delta between this computer and the OVH cluster to sign further queries
+        """Retrieves the API's time delta.
+
+        Retrieves the time delta between this computer and the OVH cluster
+        to sign further queries.
+
+        :returns: the time delta in seconds.
         """
         if self._time_delta is None:
-            self._time_delta = 0
-            server_time = int(requests.get(self.base_url + "/auth/time").text)
-            self._time_delta = server_time - int(time.time())
+            result = self.session.get(self.endpoint_url + "/auth/time")
+            result.raise_for_status()
+            self._time_delta = int(result.text) - int(time.time())
         return self._time_delta
 
-    def request_credentials(self, access_rules, redirect_url=None):
-        """
-        Request a Consumer Key to the API. That key will need to be validated with the link returned in the answer.
-        Arguments:
-        - accessRules: list of dictionaries listing the accesses your application will need.
-          Each dictionary must contain two keys : method, of the four HTTP methods, and path,
-          the path you will need access for, with * as a wildcard
-        - redirectUrl: url where you want the user to be redirected to after he successfully validates the consumer key
-        """
-        target_url = self.base_url + "/auth/credential"
-        params = dict(accessRules=access_rules)
-        params["redirection"] = redirect_url
-        query_data = json.dumps(params)
-        q = requests.post(target_url, headers={"X-Ovh-Application": self.application_key,
-                                               "Content-type": "application/json"}, data=query_data)
-        return json.loads(q.text)
+    def _call(self, method, path, content=None):
+        """Calls the API with the given parameters.
 
-    def raw_call(self, method, path, content=None):
+        The request will be signed if the consumer key has been set.
+
+        :param method: the HTTP method of the request (get/post/put/delete)
+        :param path: the url you want to request
+        :param content: the object you want to send in your request
+            (will be automatically serialized to JSON)
+        :raises: requests.exceptions.HTTPError if the API return an error
         """
-        This is the main method of this wrapper. It will sign a given query and return its result.
-        Arguments:
-        - method: the HTTP method of the request (get/post/put/delete)
-        - path: the url you want to request
-        - content: the object you want to send in your request (will be automatically serialized to JSON)
-        """
-        target_url = self.base_url + path
+        target_url = self.endpoint_url + path
         now = str(int(time.time()) + self.time_delta())
         body = ""
         if content is not None:
             body = json.dumps(content)
-        s1 = hashlib.sha1()
-        s1.update("+".join([self.application_secret, self.consumer_key, method.upper(), target_url, body, now]))
-        sig = "$1$" + s1.hexdigest()
-        query_headers = {"X-Ovh-Application": self.application_key, "X-Ovh-Timestamp": now,
-                         "X-Ovh-Consumer": self.consumer_key, "X-Ovh-Signature": sig,
-                         "Content-type": "application/json"}
-        if self.consumer_key == "":
-            query_headers = {"X-Ovh-Application": self.application_key, "X-Ovh-Timestamp": now,
-                             "Content-type": "application/json"}
-        req = getattr(requests, method.lower())
-        # For debug : print "%s %s" % (method.upper(), target_url)
-        result = req(target_url, headers=query_headers, data=body).text
-        return json.loads(result)
 
-    def get(self, path, content=None):
+        headers = {
+            "Content-type": "application/json",
+            "X-Ovh-Application": self.application_key,
+            "X-Ovh-Timestamp": now,
+        }
+
+        if self.consumer_key != "":
+            # Compute the call signature for authentication
+            s1 = hashlib.sha1()
+            s1.update("+".join([
+                self.application_secret,
+                self.consumer_key,
+                method.upper(),
+                target_url,
+                body,
+                now
+            ]).encode('utf-8'))
+            headers["X-Ovh-Consumer"] = self.consumer_key
+            headers["X-Ovh-Signature"] = "$1$" + s1.hexdigest()
+
+        # Re-use the session init at startup
+        req = getattr(self.session, method.lower())
+
+        self._log_request(method.upper(), target_url, headers, body)
+
+        try:
+            result = req(target_url, stream=False, headers=headers, data=body)
+            result.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            LOG.error("Error querying OVH API:", e)
+            raise e
+        return result
+
+    def _log_request(self, method, target_url, headers, data):
+        """Logs the request made for debugging purposes.
+
+        :param method: the HTTP method of the request (get/post/put/delete)
+        :param target_url: the url requested
+        :param headers: the headers passed in the request
+        :param data: the data passed in the request
         """
-        Helper method that wrap a call to rawCall("get")
+        if not self.debug:
+            return
+
+        string_parts = [
+            "curl -g -i",
+            "-X '%s'" % method,
+            "'%s'" % target_url,
+        ]
+
+        for k, v in headers.iteritems():
+            if OBFUSCATE_REGEX.search(k):
+                v = 'OBFUSCATED'
+            header = "-H '{}: {}'".format(k, v)
+            string_parts.append(header)
+
+        LOG.debug("OVH API REQ: {}".format(" ".join(string_parts)))
+        if data:
+            LOG.debug("OVH API REQ BODY: {}".format(data))
+
+    def get(self, path):
+        """Wraps call to _call("get")
+
+        :param path: the url of the resource you want to get
         """
-        if content:
-            return self.raw_call("get", path, content)
-        else:
-            return self.raw_call("get", path)
+        return self._call("get", path)
 
     def put(self, path, content):
+        """Wraps a call to _call("put")
+
+        :param path: the url of the resource you want to modify
+        :param content: the object you want to modify
         """
-        Helper method that wrap a call to rawCall("put")
-        """
-        return self.raw_call("put", path, content)
+        return self._call("put", path, content)
 
     def post(self, path, content):
-        """
-        Helper method that wrap a call to rawCall("post")
-        """
-        return self.raw_call("post", path, content)
+        """Wraps a call to _call("post")
 
-    def delete(self, path, content=None):
+        :param path: the url of the resource you want to create
+        :param content: the object you want to create
         """
-        Helper method that wrap a call to rawCall("delete")
+        return self._call("post", path, content)
+
+    def delete(self, path):
+        """Wraps a call to _call("delete")
+
+        :param path: the url of the resource you want to delete
         """
-        return self.raw_call("delete", path, content)
+        return self._call("delete", path)

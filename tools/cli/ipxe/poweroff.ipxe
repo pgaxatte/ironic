@@ -1,4 +1,0 @@
-#!ipxe
-
-echo "Asking poweroff"
-poweroff
