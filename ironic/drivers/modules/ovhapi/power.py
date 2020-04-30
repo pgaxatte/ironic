@@ -19,6 +19,7 @@ from oslo_log import log as logging
 from ironic.common import exception
 from ironic.common.i18n import _
 from ironic.common import states
+from ironic.conductor import task_manager
 from ironic.conf import CONF
 from ironic.drivers import base
 from ironic.drivers.modules.ovhapi import client as ovhclient
@@ -48,7 +49,7 @@ class OvhApiPower(base.PowerInterface):
         :returns: one of :mod:`ironic.common.states` POWER_OFF, POWER_ON or
             ERROR.
         """
-        return [states.POWER_OFF, states.POWER_ON, states.REBOOT]
+        return task.node.power_state
 
     @task_manager.require_exclusive_lock
     def set_power_state(self, task, power_state, timeout=None):
@@ -70,12 +71,14 @@ class OvhApiPower(base.PowerInterface):
                 result = self._client.set_boot_script(
                     server_name, CONF.ovhapi.poweroff_script)
                 result.raise_for_status()
+
                 result = self._client.reboot_server(server_name)
                 result.raise_for_status()
             elif power_state in (states.POWER_ON, states.REBOOT):
                 result = self._client.set_boot_script(
                     server_name, CONF.ovhapi.boot_script)
                 result.raise_for_status()
+
                 result = self._client.reboot_server(server_name)
                 result.raise_for_status()
         except Exception as e:

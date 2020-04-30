@@ -124,7 +124,8 @@ class Api(object):
             result = req(target_url, stream=False, headers=headers, data=body)
             result.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            LOG.error("Error querying OVH API:", e)
+            LOG.error("Error querying OVH API: %(error)s",
+                      {'error': e})
             raise e
         return result
 
@@ -145,7 +146,7 @@ class Api(object):
             "'%s'" % target_url,
         ]
 
-        for k, v in headers.iteritems():
+        for k, v in headers.items():
             if OBFUSCATE_REGEX.search(k):
                 v = 'OBFUSCATED'
             header = "-H '{}: {}'".format(k, v)

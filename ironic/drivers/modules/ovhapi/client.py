@@ -60,7 +60,8 @@ class BaseClient(ovh_base.Api):
 
         :param server_name: the name of the server to reboot
         """
-        return self.post("/dedicated/server/{}/reboot".format(server_name))
+        return self.post("/dedicated/server/{}/reboot".format(server_name),
+                         None)
 
     def set_boot_script(self, server_name, script_name):
         """Sets the server to point on the specified boot script
@@ -70,7 +71,7 @@ class BaseClient(ovh_base.Api):
         """
         boot_id = self.get_ipxe_script_id(server_name, script_name)
         return self.put("/dedicated/server/{}"
-                        .format(server_name), boot_id=boot_id)
+                        .format(server_name), {'bootId': boot_id})
 
     def get_task(self, server_name, task_id):
         return self.get("/dedicated/server/{}/task/{}"
@@ -84,16 +85,25 @@ class BaseClient(ovh_base.Api):
         :returns: the ID of the script
         """
         try:
-            result = self.get("/dedicated/server/{}/boot".format(server_name))
+            result = self.get(
+                "/dedicated/server/{}/boot?bootType=ipxeCustomerScript"
+                .format(server_name)
+            ).json()
+            LOG.debug("Get ipxeCustomerScript for {}. Result={}"
+                      .format(server_name, result))
         except requests.exceptions.HTTPError as e:
-            LOG.error("Could not retrieve boot scripts for server '{}': {}"
-                      .format(server_name, e))
+            LOG.error("Could not retrieve boot scripts for server %(server)s: "
+                      "%(error)s",
+                      {'server': server_name, 'error': e})
             raise e
 
         for boot_id in result:
             try:
-                result = self.get("/dedicated/server/{}/boot/{}"
-                                  .format(server_name, boot_id))
+                result = self.get(
+                    "/dedicated/server/{}/boot/{}"
+                    .format(server_name, boot_id)).json()
+                LOG.debug("Get boot info for {}. Result={}"
+                          .format(server_name, result))
             except requests.exceptions.HTTPError as e:
                 LOG.warning("Could not get the description of bootId {} for "
                             "server '{}'. Skipping. Exception: {}"
@@ -103,10 +113,13 @@ class BaseClient(ovh_base.Api):
             # If this bootId corresponds to the script we are looking for,
             # return it
             if result.get("kernel", "") == script_name:
+                LOG.debug("boot_id found {}: {} -> {}"
+                          .format(server_name, script_name, boot_id))
                 return boot_id
 
         # TODO(pgaxatte): use a real custom exception
         e = Exception("No script {} found for server {}"
                       .format(script_name, server_name))
-        LOG.error("Could not retrieve the ID of the script: {}".format(e))
+        LOG.error("Could not retrieve the ID of the script %(script)s: %(error)s",
+                  {'script': script_name, 'error': e})
         raise e
