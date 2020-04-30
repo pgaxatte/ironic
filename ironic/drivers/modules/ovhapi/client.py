@@ -16,7 +16,6 @@ from oslo_log import log
 import requests
 
 from ironic.conf import CONF
-from ironic.drivers.modules.ovhapi import ENDPOINTS
 from ironic.drivers.modules.ovhapi import ovh_base
 
 LOG = log.getLogger(__file__)
@@ -26,7 +25,7 @@ class BaseClient(ovh_base.Api):
 
     def __init__(self):
         super(BaseClient, self).__init__(
-            ENDPOINTS.get(CONF.ovhapi.endpoint),
+            ovh_base.ENDPOINTS.get(CONF.ovhapi.endpoint),
             CONF.ovhapi.application_key,
             CONF.ovhapi.application_secret,
             CONF.ovhapi.consumer_key,
