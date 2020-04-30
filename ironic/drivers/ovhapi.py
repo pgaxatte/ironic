@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+OVH API hardware types.
+"""
+
 from ironic.drivers import generic
 from ironic.drivers.modules import fake
 from ironic.drivers.modules import noop_mgmt
@@ -19,6 +23,7 @@ from ironic.drivers.modules.ovhapi import power
 
 
 class OvhApiHardware(generic.GenericHardware):
+    """OVH API Hardware type """
 
     @property
     def supported_management_interfaces(self):

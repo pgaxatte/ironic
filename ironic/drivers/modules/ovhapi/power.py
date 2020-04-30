@@ -41,6 +41,7 @@ class OvhApiPower(base.PowerInterface):
         super(OvhApiPower, self).__init__()
         self._client = ovhclient.BaseClient()
 
+    @METRICS.timer('OvhApiPower.get_supported_power_states')
     def get_power_state(self, task):
         """Gets the current power state.
 
@@ -48,8 +49,10 @@ class OvhApiPower(base.PowerInterface):
         :returns: one of :mod:`ironic.common.states` POWER_OFF, POWER_ON or
             ERROR.
         """
-        return task.node.power_state
+        return [states.POWER_OFF, states.POWER_ON, states.REBOOT]
 
+    @METRICS.timer('OvhApiPower.set_power_state')
+    @task_manager.require_exclusive_lock
     def set_power_state(self, task, power_state, timeout=None):
         """Sets the power state according to the requested state.
 
@@ -109,6 +112,8 @@ class OvhApiPower(base.PowerInterface):
                 task.node.power_state = power_state
                 break
 
+    @METRICS.timer('OvhApiPower.reboot')
+    @task_manager.require_exclusive_lock
     def reboot(self, task, timeout=None):
         self.set_power_state(task, states.REBOOT)
 
@@ -119,6 +124,7 @@ class OvhApiPower(base.PowerInterface):
         """
         return COMMON_PROPERTIES
 
+    @METRICS.timer('OvhApiPower.validate')
     def validate(self, task):
         """Check that node.driver_info contains the requisite fields.
 
