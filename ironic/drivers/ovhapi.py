@@ -18,6 +18,8 @@ OVH API hardware types.
 
 from ironic.drivers import generic
 from ironic.drivers.modules import fake
+from ironic.drivers.modules import inspector
+from ironic.drivers.modules import noop
 from ironic.drivers.modules import noop_mgmt
 from ironic.drivers.modules.ovhapi import power
 
@@ -34,3 +36,9 @@ class OvhApiHardware(generic.GenericHardware):
     def supported_power_interfaces(self):
         """List of supported power interfaces."""
         return [power.OvhApiPower]
+
+    @property
+    def supported_inspect_interfaces(self):
+        """List of supported inspect interfaces."""
+        return [fake.FakeInspect, inspector.Inspector,
+                noop.NoInspect]
