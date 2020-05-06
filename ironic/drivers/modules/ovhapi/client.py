@@ -15,7 +15,9 @@
 from oslo_log import log
 import requests
 
+from ironic.common import states
 from ironic.conf import CONF
+from ironic.drivers.modules import deploy_utils
 from ironic.drivers.modules.ovhapi import ovh_base
 
 LOG = log.getLogger(__file__)
@@ -63,13 +65,37 @@ class BaseClient(ovh_base.Api):
         return self.post("/dedicated/server/{}/reboot".format(server_name),
                          None)
 
-    def set_boot_script(self, server_name, script_name):
+    def set_boot_script(self, task, server_name, script_name):
         """Sets the server to point on the specified boot script
+        Or harddisk according to the task
 
         :param server_name: the name of the server to configure
         :param script_name: the name of the script to use on next boot
         """
-        boot_id = self.get_ipxe_script_id(server_name, script_name)
+
+        node = task.node
+
+        boot_option = deploy_utils.get_boot_option(node)
+
+        boot_id = None
+
+        LOG.debug("YANN Current node provision_state before boot for {}. Result={}"
+                  .format(server_name, node.provision_state))
+        LOG.debug("YANN Current task {}"
+                  .format(task))
+        LOG.debug("YANN Current node {}"
+                  .format(node))
+        LOG.debug("YANN Current boot_option {}"
+                  .format(boot_option))
+
+        if node.provision_state == states.DEPLOYDONE:
+            boot_id = self.get_disk_boot_id(server_name)
+        else:
+            boot_id = self.get_ipxescript_boot_id(server_name, script_name)
+
+        LOG.debug("YANN Boot server on id for {}. Result={}"
+                  .format(server_name, boot_id))
+
         return self.put("/dedicated/server/{}"
                         .format(server_name), {'bootId': boot_id})
 
@@ -77,7 +103,7 @@ class BaseClient(ovh_base.Api):
         return self.get("/dedicated/server/{}/task/{}"
                         .format(server_name, task_id))
 
-    def get_ipxe_script_id(self, server_name, script_name):
+    def get_ipxescript_boot_id(self, server_name, script_name):
         """Gets the ID of a ipxe script from its name for a given server.
 
         :raises: requests.exceptions.HTTPError if the API return an error
@@ -89,7 +115,7 @@ class BaseClient(ovh_base.Api):
                 "/dedicated/server/{}/boot?bootType=ipxeCustomerScript"
                 .format(server_name)
             ).json()
-            LOG.debug("Get ipxeCustomerScript for {}. Result={}"
+            LOG.debug("YANN Get ipxeCustomerScript for {}. Result={}"
                       .format(server_name, result))
         except requests.exceptions.HTTPError as e:
             LOG.error("Could not retrieve boot scripts for server %(server)s: "
@@ -102,7 +128,7 @@ class BaseClient(ovh_base.Api):
                 result = self.get(
                     "/dedicated/server/{}/boot/{}"
                     .format(server_name, boot_id)).json()
-                LOG.debug("Get boot info for {}. Result={}"
+                LOG.debug("YANN Get boot info for {}. Result={}"
                           .format(server_name, result))
             except requests.exceptions.HTTPError as e:
                 LOG.warning("Could not get the description of bootId {} for "
@@ -113,7 +139,7 @@ class BaseClient(ovh_base.Api):
             # If this bootId corresponds to the script we are looking for,
             # return it
             if result.get("kernel", "") == script_name:
-                LOG.debug("boot_id found {}: {} -> {}"
+                LOG.debug("YANN boot_id found {}: {} -> {}"
                           .format(server_name, script_name, boot_id))
                 return boot_id
 
@@ -122,4 +148,33 @@ class BaseClient(ovh_base.Api):
                       .format(script_name, server_name))
         LOG.error("Could not retrieve the ID of the script %(script)s: %(error)s",
                   {'script': script_name, 'error': e})
+        raise e
+
+    def get_disk_boot_id(self, server_name):
+        """Gets the boot ID for harddisk boot type a from its name for a given server.
+
+        :raises: requests.exceptions.HTTPError if the API return an error
+        :raises: Exception if not matching script is found
+        :returns: the ID of the script
+        """
+        try:
+            result = self.get(
+                "/dedicated/server/{}/boot?bootType=harddisk"
+                .format(server_name)
+            ).json()
+            LOG.debug("YANN Get harddisk boot id for {}. Result={}"
+                      .format(server_name, result))
+        except requests.exceptions.HTTPError as e:
+            LOG.error("Could not retrieve boot script for server %(server)s: "
+                      "%(error)s",
+                      {'server': server_name, 'error': e})
+            raise e
+
+        for boot_id in result:
+            LOG.debug("YANN return first harddisk boot id found for {}. Result={}"
+                      .format(server_name, boot_id))
+            return boot_id
+
+        e = Exception("No id for boot type harddisk found for server {}"
+                      .format(script_name))
         raise e

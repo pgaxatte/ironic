@@ -69,14 +69,14 @@ class OvhApiPower(base.PowerInterface):
         try:
             if power_state == states.POWER_OFF:
                 result = self._client.set_boot_script(
-                    server_name, CONF.ovhapi.poweroff_script)
+                    task, server_name, CONF.ovhapi.poweroff_script)
                 result.raise_for_status()
 
                 result = self._client.reboot_server(server_name)
                 result.raise_for_status()
             elif power_state in (states.POWER_ON, states.REBOOT):
                 result = self._client.set_boot_script(
-                    server_name, CONF.ovhapi.boot_script)
+                    task, server_name, CONF.ovhapi.boot_script)
                 result.raise_for_status()
 
                 result = self._client.reboot_server(server_name)
